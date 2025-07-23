@@ -148,7 +148,9 @@ def main():
                     print(f"社名: {shikiho_data['社名']}")
                     del shikiho_data["社名"]
                 if "四季報記事" in shikiho_data:
-                    print(f"四季報記事: {shikiho_data['四季報記事']}")
+                    print("四季報記事:")
+                    for article in shikiho_data['四季報記事']:
+                        print(article)
                     del shikiho_data["四季報記事"]
 
                 if "shimen_results" in shikiho_data:
