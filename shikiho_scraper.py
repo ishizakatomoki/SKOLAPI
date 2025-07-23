@@ -4,6 +4,8 @@ import json
 import argparse
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.table import Table
 
 # --- 定数定義 ---
 LOGIN_URL = "https://shikiho.toyokeizai.net/"
@@ -154,9 +156,21 @@ def main():
                     del shikiho_data["四季報記事"]
 
                 if "shimen_results" in shikiho_data:
-                    from tabulate import tabulate
-                    print("\n--- 四季報データ (shimen_results) ---")
-                    print(tabulate(shikiho_data["shimen_results"], headers="firstrow", tablefmt="grid"))
+                    console = Console()
+                    table = Table(show_header=True, header_style="bold magenta")
+                    
+                    # shimen_resultsの最初の要素からキーを取得し、ヘッダーとする
+                    if shikiho_data["shimen_results"]:
+                        # 最初の行をヘッダーとして使用
+                        for column_name in shikiho_data["shimen_results"][0]:
+                            table.add_column(str(column_name))
+
+                        # 2行目以降をデータとして追加
+                        for row_data in shikiho_data["shimen_results"][1:]:
+                            table.add_row(*[str(item) for item in row_data])
+
+                    console.print("\n--- 四季報データ (shimen_results) ---")
+                    console.print(table)
                     del shikiho_data["shimen_results"]
                 print(json.dumps(shikiho_data, indent=2, ensure_ascii=False))
             else:
