@@ -1,0 +1,10 @@
+.env
+.DS_Store
+.vscode
+.idea
+.pytest_cache
+.venv
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
