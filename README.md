@@ -13,6 +13,12 @@
 
 ### 🛠️ セットアップ手順
 
+macOS / Linux の場合、以下の1行コマンドで基本的なセットアップを完了できます。
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && playwright install
+```
+
 以下の手順に従って、プロジェクトをセットアップしてください。
 
 1.  **リポジトリをクローンする**
