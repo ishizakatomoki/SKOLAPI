@@ -64,11 +64,69 @@ def fetch_shikiho_data(page, stock_code):
             final_result["shimen_results"] = latest_data["shimen_results"]
         print("/latest APIの取得に成功しました。")
 
+        # --- 4. 時系列データAPIの取得 ---
+        timeseries_url = f"https://api-shikiho.toyokeizai.net/timeseries/v1/timeseries/1/{stock_code}?cycle=m&term=240m&addtionalFields=headWord&format=epocmilli&market=prime"
+        print(f"\nAPIにリクエストを送信します: {timeseries_url}")
+        timeseries_response = page.request.get(timeseries_url, headers={
+            "Referer": f"https://shikiho.toyokeizai.net/stocks/{stock_code}"
+        })
+        if not timeseries_response.ok:
+            print(f"警告: 時系列API取得に失敗: {timeseries_response.status} {timeseries_response.status_text}")
+        else:
+            timeseries_data = timeseries_response.json()
+            if "series" in timeseries_data:
+                final_result["series"] = timeseries_data["series"]
+                print("時系列APIの取得に成功しました。")
+
         return final_result
 
     except PlaywrightError as e:
         print(f"\nエラー: APIリクエスト中にエラーが発生しました。\n{e}", file=sys.stderr)
         return None
+
+def print_latest_10_articles_from_api_response(api_response):
+    # series配列を取得
+    series = api_response.get("series", [])
+    # headWordが存在し、headword1とarticle1があるものだけ抽出
+    articles = []
+    for item in series:
+        headword = item.get("headWord")
+        if headword and headword.get("headword1") and headword.get("article1"):
+            # 年数とシリーズ情報を取得
+            magazine = headword.get("magazine", {})
+            year = magazine.get("calendar", "")
+            series_num = magazine.get("series", "")
+            series_title = magazine.get("title", "")
+            
+            articles.append({
+                "year": year,
+                "series": series_num,
+                "title": series_title,
+                "headword": headword["headword1"],
+                "article": headword["article1"]
+            })
+    
+    # 最新10件を取得（末尾が最新と仮定）
+    latest_10 = articles[-10:]
+    
+    # テーブル形式で表示
+    console = Console()
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("年", style="cyan")
+    table.add_column("シリーズ", style="green")
+    table.add_column("タイトル", style="yellow")
+    table.add_column("記事", style="white", no_wrap=True)
+    
+    for article in latest_10:
+        table.add_row(
+            article["year"],
+            article["series"],
+            article["title"],
+            f"【{article['headword']}】{article['article']}"
+        )
+    
+    print("\n--- 最新10記事 ---")
+    console.print(table)
 
 def main():
     parser = argparse.ArgumentParser(description="四季報オンラインから指定した証券コードの情報を取得します。")
@@ -128,8 +186,8 @@ def main():
                 iframe_locator.get_by_role("textbox", name="パスワード").fill(password)
                 iframe_locator.get_by_role("button", name="ログイン").click()
 
-                print("ログイン処理後、ページのネットワークが安定するのを待機します...")
-                page.wait_for_load_state("networkidle", timeout=20000)
+                print("ログイン処理後、1秒待機して処理を継続します...")
+                page.wait_for_timeout(1000)
                 
                 # ログイン成功後、状態を保存
                 os.makedirs(os.path.dirname(STORAGE_STATE_PATH), exist_ok=True)
@@ -148,31 +206,9 @@ def main():
                 print("\n--- 最終取得データ ---")
                 if "社名" in shikiho_data:
                     print(f"社名: {shikiho_data['社名']}")
-                    del shikiho_data["社名"]
-                if "四季報記事" in shikiho_data:
-                    print("四季報記事:")
-                    for article in shikiho_data['四季報記事']:
-                        print(article)
-                    del shikiho_data["四季報記事"]
-
-                if "shimen_results" in shikiho_data:
-                    console = Console()
-                    table = Table(show_header=True, header_style="bold magenta")
-                    
-                    # shimen_resultsの最初の要素からキーを取得し、ヘッダーとする
-                    if shikiho_data["shimen_results"]:
-                        # 最初の行をヘッダーとして使用
-                        for column_name in shikiho_data["shimen_results"][0]:
-                            table.add_column(str(column_name))
-
-                        # 2行目以降をデータとして追加
-                        for row_data in shikiho_data["shimen_results"][1:]:
-                            table.add_row(*[str(item) for item in row_data])
-
-                    console.print("\n--- 四季報データ (shimen_results) ---")
-                    console.print(table)
-                    del shikiho_data["shimen_results"]
-                print(json.dumps(shikiho_data, indent=2, ensure_ascii=False))
+                
+                # 最新10記事を出力
+                print_latest_10_articles_from_api_response(shikiho_data)
             else:
                 print("\nエラー: データの取得に失敗しました。", file=sys.stderr)
                 sys.exit(1)
