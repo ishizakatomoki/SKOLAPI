@@ -16,7 +16,7 @@ SSO_CHECK_URL = "https://api-shikiho.toyokeizai.net/sso/v1/sso/check"
 API_BASE_URL = "https://api-shikiho.toyokeizai.net/stocks/v1/stocks"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 STORAGE_STATE_PATH = "playwright_user_data/state.json"
-CONCURRENT_LIMIT = 3  # 同時実行数
+CONCURRENT_LIMIT = 300  # 同時実行数
 
 def load_stock_codes(file_path):
     """JSONまたはCSVファイルから証券コードリストを読み込む"""
@@ -43,7 +43,8 @@ async def fetch_shikiho_articles(page, stock_code):
             "Referer": "https://shikiho.toyokeizai.net/"
         })
         if not sso_response.ok:
-            raise PlaywrightError(f"SSOチェックに失敗しました: {sso_response.status}")
+            print(f"SSOチェックに失敗しました: {sso_response.status}")
+            return None  # SSOチェック失敗時はNoneを返す
 
         # ヘッダー情報APIから記事を取得
         headers_url = f"{API_BASE_URL}/{stock_code}/headers"
@@ -85,6 +86,38 @@ async def perform_login(page, user_id, password):
     print("ログイン処理後、1秒待機して処理を継続します...")
     await page.wait_for_timeout(1000)
 
+async def perform_new_login(browser, user_id, password):
+    """
+    新しいログインを実行し、状態ファイルを更新する（非同期版）
+    """
+    print("新しいログインを実行します...")
+    context = await browser.new_context(user_agent=USER_AGENT)
+    page = await context.new_page()
+    
+    try:
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        await page.get_by_role("button", name="ログイン").first.click()
+        await page.get_by_role("button", name="ログイン").nth(1).click()
+
+        iframe_locator = page.frame_locator('iframe[name^="piano-id-"]')
+        await iframe_locator.get_by_role("textbox", name="email").fill(user_id)
+        await iframe_locator.get_by_role("textbox", name="パスワード").fill(password)
+        await iframe_locator.get_by_role("button", name="ログイン").click()
+
+        print("ログイン処理後、1秒待機して処理を継続します...")
+        await page.wait_for_timeout(1000)
+        
+        # ログイン成功後、状態を保存
+        os.makedirs(os.path.dirname(STORAGE_STATE_PATH), exist_ok=True)
+        await context.storage_state(path=STORAGE_STATE_PATH)
+        print(f"新しいログイン状態を保存しました: {STORAGE_STATE_PATH}")
+        
+        return context, page
+    except PlaywrightError as e:
+        print(f"ログイン中にエラーが発生しました: {e}")
+        await context.close()
+        return None, None
+
 async def process_stock_code(semaphore, page, stock_code, progress, task, console):
     """個別の証券コードを処理（セマフォ制御付き）"""
     async with semaphore:
@@ -93,7 +126,15 @@ async def process_stock_code(semaphore, page, stock_code, progress, task, consol
             
             result = await fetch_shikiho_articles(page, stock_code)
             
-            if "エラー" in result:
+            if result is None: # SSOチェック失敗時
+                console.print(f"[red]SSOチェックに失敗しました: {stock_code}")
+                return {
+                    "証券コード": stock_code,
+                    "社名": "",
+                    "四季報記事": [],
+                    "エラー": "SSO_CHECK_FAILED"
+                }
+            elif "エラー" in result:
                 console.print(f"[red]エラー: {stock_code} - {result['エラー']}")
             else:
                 article_count = len(result.get("四季報記事", []))
@@ -206,6 +247,8 @@ async def main_async():
 
                 # エラーを処理
                 processed_results = []
+                sso_failed_codes = []  # SSOチェック失敗した証券コードを記録
+                
                 for i, result in enumerate(results):
                     if isinstance(result, Exception):
                         error_result = {
@@ -219,7 +262,53 @@ async def main_async():
                     else:
                         processed_results.append(result)
                         if "エラー" in result:
+                            if result["エラー"] == "SSO_CHECK_FAILED":
+                                sso_failed_codes.append(result["証券コード"])
                             errors.append(f"{result['証券コード']}: {result['エラー']}")
+
+                # SSOチェック失敗した証券コードがある場合、再ログインして再試行
+                if sso_failed_codes:
+                    console.print(f"\n[bold red]SSOチェック失敗した証券コード: {len(sso_failed_codes)}社[/bold red]")
+                    console.print(f"再ログインを実行して再試行します...")
+                    
+                    # 新しいログインを実行
+                    context.close()
+                    context, page = await perform_new_login(browser, user_id, password)
+                    if context is None or page is None:
+                        console.print(f"[bold red]再ログインに失敗しました。[/bold red]")
+                    else:
+                        # SSOチェック失敗した証券コードのみ再試行
+                        console.print(f"SSOチェック失敗した証券コードを再試行します...")
+                        
+                        # セマフォで同時実行数を制限
+                        semaphore = asyncio.Semaphore(args.concurrent)
+                        
+                        # 再試行用のタスクを作成
+                        retry_tasks = []
+                        for stock_code in sso_failed_codes:
+                            task_coro = process_stock_code(semaphore, page, stock_code, progress, task, console)
+                            retry_tasks.append(task_coro)
+                        
+                        # 再試行を実行
+                        retry_results = await asyncio.gather(*retry_tasks, return_exceptions=True)
+                        
+                        # 再試行結果を処理結果に反映
+                        for i, retry_result in enumerate(retry_results):
+                            if isinstance(retry_result, Exception):
+                                # 既存のエラー結果を更新
+                                for j, processed_result in enumerate(processed_results):
+                                    if processed_result["証券コード"] == sso_failed_codes[i]:
+                                        processed_results[j]["エラー"] = str(retry_result)
+                                        errors.append(f"{sso_failed_codes[i]}: {retry_result}")
+                                        break
+                            else:
+                                # 成功した場合は既存の結果を更新
+                                for j, processed_result in enumerate(processed_results):
+                                    if processed_result["証券コード"] == sso_failed_codes[i]:
+                                        processed_results[j] = retry_result
+                                        # エラーリストから削除
+                                        errors = [e for e in errors if not e.startswith(f"{sso_failed_codes[i]}:")]
+                                        break
 
             await browser.close()
 

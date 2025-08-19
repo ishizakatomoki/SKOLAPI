@@ -30,7 +30,8 @@ def fetch_shikiho_data(page, stock_code):
             "Referer": "https://shikiho.toyokeizai.net/"
         })
         if not sso_response.ok:
-            raise PlaywrightError(f"SSOチェックに失敗しました: {sso_response.status} {sso_response.status_text}")
+            print(f"SSOチェックに失敗しました: {sso_response.status} {sso_response.status_text}")
+            return None  # SSOチェック失敗時はNoneを返す
         print("認証チェック(SSO)に成功しました。")
         # print(json.dumps(await sso_response.json(), indent=2, ensure_ascii=False)) # デバッグ用
 
@@ -98,16 +99,26 @@ def print_latest_10_articles_from_api_response(api_response):
             series_num = magazine.get("series", "")
             series_title = magazine.get("title", "")
             
+            # 業績欄（前半）
+            performance_headword = headword.get("headword1", "")
+            performance_article = headword.get("article1", "")
+            
+            # 材料欄（後半）
+            material_headword = headword.get("headword2", "")
+            material_article = headword.get("article2", "")
+            
             articles.append({
                 "year": year,
                 "series": series_num,
                 "title": series_title,
-                "headword": headword["headword1"],
-                "article": headword["article1"]
+                "performance_headword": performance_headword,
+                "performance_article": performance_article,
+                "material_headword": material_headword,
+                "material_article": material_article
             })
     
-    # 最新10件を取得（末尾が最新と仮定）
-    latest_10 = articles[-10:]
+    # 最新12件を取得（末尾が最新と仮定）
+    latest_12 = articles[-12:]
     
     # テーブル形式で表示
     console = Console()
@@ -115,18 +126,55 @@ def print_latest_10_articles_from_api_response(api_response):
     table.add_column("年", style="cyan")
     table.add_column("シリーズ", style="green")
     table.add_column("タイトル", style="yellow")
-    table.add_column("記事", style="white", no_wrap=True)
+    table.add_column("業績欄", style="white", no_wrap=True)
+    table.add_column("材料欄", style="white", no_wrap=True)
     
-    for article in latest_10:
+    for article in latest_12:
+        performance_text = f"【{article['performance_headword']}】{article['performance_article']}" if article['performance_headword'] and article['performance_article'] else ""
+        material_text = f"【{article['material_headword']}】{article['material_article']}" if article['material_headword'] and article['material_article'] else ""
+        
         table.add_row(
             article["year"],
             article["series"],
             article["title"],
-            f"【{article['headword']}】{article['article']}"
+            performance_text,
+            material_text
         )
     
-    print("\n--- 最新10記事 ---")
+    print("\n--- 最新12記事（業績欄・材料欄） ---")
     console.print(table)
+
+def perform_new_login(browser, user_id, password):
+    """
+    新しいログインを実行し、状態ファイルを更新する
+    """
+    print("新しいログインを実行します...")
+    context = browser.new_context(user_agent=USER_AGENT)
+    page = context.new_page()
+    
+    try:
+        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        page.get_by_role("button", name="ログイン").first.click()
+        page.get_by_role("button", name="ログイン").nth(1).click()
+
+        iframe_locator = page.frame_locator('iframe[name^="piano-id-"]')
+        iframe_locator.get_by_role("textbox", name="email").fill(user_id)
+        iframe_locator.get_by_role("textbox", name="パスワード").fill(password)
+        iframe_locator.get_by_role("button", name="ログイン").click()
+
+        print("ログイン処理後、1秒待機して処理を継続します...")
+        page.wait_for_timeout(1000)
+        
+        # ログイン成功後、状態を保存
+        os.makedirs(os.path.dirname(STORAGE_STATE_PATH), exist_ok=True)
+        context.storage_state(path=STORAGE_STATE_PATH)
+        print(f"新しいログイン状態を保存しました: {STORAGE_STATE_PATH}")
+        
+        return context, page
+    except PlaywrightError as e:
+        print(f"ログイン中にエラーが発生しました: {e}")
+        context.close()
+        return None, None
 
 def main():
     parser = argparse.ArgumentParser(description="四季報オンラインから指定した証券コードの情報を取得します。")
@@ -147,6 +195,9 @@ def main():
             
             # ログイン状態のキャッシュを試みる
             perform_login = False
+            context = None
+            page = None
+            
             if os.path.exists(STORAGE_STATE_PATH):
                 print(f"既存のログイン状態をロードします: {STORAGE_STATE_PATH}")
                 context = browser.new_context(user_agent=USER_AGENT, storage_state=STORAGE_STATE_PATH)
@@ -171,33 +222,33 @@ def main():
                     perform_login = True
             else:
                 print("既存のログイン状態が見つかりません。新規ログインします。")
-                context = browser.new_context(user_agent=USER_AGENT)
-                page = context.new_page()
                 perform_login = True
 
             if perform_login:
-                print("Playwrightを起動してログインを開始します...")
-                page.goto(LOGIN_URL, wait_until="domcontentloaded")
-                page.get_by_role("button", name="ログイン").first.click()
-                page.get_by_role("button", name="ログイン").nth(1).click()
-
-                iframe_locator = page.frame_locator('iframe[name^="piano-id-"]')
-                iframe_locator.get_by_role("textbox", name="email").fill(user_id)
-                iframe_locator.get_by_role("textbox", name="パスワード").fill(password)
-                iframe_locator.get_by_role("button", name="ログイン").click()
-
-                print("ログイン処理後、1秒待機して処理を継続します...")
-                page.wait_for_timeout(1000)
-                
-                # ログイン成功後、状態を保存
-                os.makedirs(os.path.dirname(STORAGE_STATE_PATH), exist_ok=True)
-                context.storage_state(path=STORAGE_STATE_PATH)
-                print(f"新しいログイン状態を保存しました: {STORAGE_STATE_PATH}")
+                context, page = perform_new_login(browser, user_id, password)
+                if context is None or page is None:
+                    print("ログインに失敗しました。", file=sys.stderr)
+                    sys.exit(1)
             
             print("ログインに成功し、ページが安定しました。")
 
             # --- データ取得処理 ---
             shikiho_data = fetch_shikiho_data(page, args.stock_code)
+            
+            # SSOチェックが失敗した場合、新しいログインを試行
+            if shikiho_data is None:
+                print("\nSSOチェックが失敗しました。新しいログイン状態を取得します...")
+                context.close()
+                context, page = perform_new_login(browser, user_id, password)
+                if context is None or page is None:
+                    print("再ログインに失敗しました。", file=sys.stderr)
+                    sys.exit(1)
+                
+                # 再度データ取得を試行
+                shikiho_data = fetch_shikiho_data(page, args.stock_code)
+                if shikiho_data is None:
+                    print("\nエラー: 再ログイン後もSSOチェックが失敗しました。", file=sys.stderr)
+                    sys.exit(1)
 
             browser.close()
 
